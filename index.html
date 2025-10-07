@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HowChat</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; font-family:sans-serif; }
+body, html { height:100%; }
+
+/* ===== Signup/Login ===== */
+#auth {
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  height:100vh;
+  background:#128C7E;
+  color:#fff;
+}
+#auth h2 { margin-bottom:20px; font-size:2em; }
+#auth input {
+  margin:5px;
+  padding:10px;
+  border-radius:20px;
+  border:none;
+  width:250px;
+}
+#auth button {
+  padding:10px 20px;
+  border-radius:20px;
+  border:none;
+  color:#fff;
+  cursor:pointer;
+  margin:5px;
+  font-weight:bold;
+}
+#signupBtn { background:#25D366; }
+#loginBtn { background:#075E54; }
+#authMsg { color:#FFD700; margin-top:10px; }
+
+/* ===== Chat layout ===== */
+.container { display:flex; height:100vh; display:none; } /* hidden initially */
+.sidebar { width:300px; background:#ededed; border-right:1px solid #ccc; display:flex; flex-direction:column; }
+.sidebar header { padding:15px; background:#128C7E; color:#fff; font-size:1.2em; text-align:center; }
+.search { padding:10px; border-bottom:1px solid #ccc; }
+.search input { width:100%; padding:8px; border-radius:20px; border:1px solid #ccc; }
+.contacts { flex:1; overflow-y:auto; }
+.contact { padding:10px; display:flex; align-items:center; cursor:pointer; border-bottom:1px solid #ddd; }
+.contact:hover { background:#f2f2f2; }
+.contact img { width:40px; height:40px; border-radius:50%; margin-right:10px; }
+.contact.online::after { content:""; width:10px; height:10px; background:green; border-radius:50%; margin-left:auto; }
+
+/* Chat */
+.chat { flex:1; display:flex; flex-direction:column; background:#f0f0f0; }
+.chat header { padding:15px; background:#eee; display:flex; align-items:center; border-bottom:1px solid #ccc; }
+.chat header img { width:40px; height:40px; border-radius:50%; margin-right:10px; }
+.chat-messages { flex:1; padding:10px; overflow-y:auto; }
+.message { max-width:60%; padding:8px 12px; margin:5px 0; border-radius:10px; clear:both; word-wrap: break-word; position: relative; }
+.message.sent { background:#dcf8c6; margin-left:auto; }
+.message.received { background:#fff; margin-right:auto; }
+.timestamp { font-size:10px; color:#555; margin-top:2px; text-align:right; }
+.chat-footer { padding:10px; display:flex; border-top:1px solid #ccc; background:#eee; }
+.chat-footer input { flex:1; padding:10px; border-radius:20px; border:1px solid #ccc; }
+.chat-footer button { margin-left:10px; padding:10px 15px; border:none; border-radius:50%; background:#128C7E; color:#fff; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<!-- Signup/Login -->
+<div id="auth">
+  <h2>HowChat</h2>
+  <input type="text" id="username" placeholder="Username (for signup)">
+  <input type="email" id="email" placeholder="Email">
+  <input type="password" id="password" placeholder="Password">
+  <div>
+    <button id="signupBtn">Signup</button>
+    <button id="loginBtn">Login</button>
+  </div>
+  <p id="authMsg"></p>
+</div>
+
+<!-- Chat container -->
+<div class="container" id="chatContainer">
+  <div class="sidebar">
+    <header>HowChat</header>
+    <div class="search"><input type="text" placeholder="Search contacts" id="searchContacts"></div>
+    <div class="contacts" id="contacts"></div>
+  </div>
+  <div class="chat">
+    <header id="chat-header">
+      <img src="" alt="Avatar">
+      <span id="chat-name">Select a contact</span>
+      <div style="margin-left:auto">
+        <button id="videoCallBtn">📹</button>
+        <button id="voiceCallBtn">🎤</button>
+      </div>
+    </header>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-footer">
+      <input type="text" id="message-input" placeholder="Type a message">
+      <button id="send-btn">&#9658;</button>
+      <input type="file" id="file-input" style="display:none">
+      <button id="file-btn">📎</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+<script>
+const socket = io();
+let userId = null;
+let contacts = [];
+let selectedContact = null;
+let localStream, peer;
+
+// ===== Signup/Login =====
+document.getElementById("signupBtn").onclick = async ()=> {
+  const username = document.getElementById("username").value.trim();
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value.trim();
+  const res = await fetch("/api/auth/signup", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({username,email,password})
+  });
+  const data = await res.json();
+  if(data.success){ loginUser(data.user); } else { document.getElementById("authMsg").innerText=data.error; }
+};
+
+document.getElementById("loginBtn").onclick = async ()=> {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value.trim();
+  const res = await fetch("/api/auth/login", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({email,password})
+  });
+  const data = await res.json();
+  if(data.success){ loginUser(data.user); } else { document.getElementById("authMsg").innerText=data.error; }
+};
+
+async function loginUser(user){
+  userId = user.id;
+  document.getElementById("auth").style.display="none";
+  document.getElementById("chatContainer").style.display="flex";
+  socket.emit("online",{userId});
+  await loadFriends();
+}
+
+// ===== Load friends =====
+async function loadFriends(){
+  const res = await fetch(`/api/auth/friends/${userId}`);
+  contacts = await res.json();
+  renderContacts();
+}
+
+// ===== Render contacts =====
+function renderContacts(){
+  const container = document.getElementById("contacts");
+  container.innerHTML="";
+  contacts.forEach(c=>{
+    const div=document.createElement("div");
+    div.classList.add("contact");
+    div.classList.toggle("online", Math.random()<0.7);
+    div.innerHTML=`<img src="https://cdn-icons-png.flaticon.com/512/616/616408.png" alt="Avatar"><span>${c.username}</span>`;
+    div.onclick = ()=>selectContact(c);
+    container.appendChild(div);
+  });
+}
+
+// ===== Select contact =====
+function selectContact(c){
+  selectedContact=c;
+  document.getElementById("chat-name").textContent=c.username;
+  document.getElementById("chat-header").querySelector("img").src="https://cdn-icons-png.flaticon.com/512/616/616408.png";
+  document.getElementById("chat-messages").innerHTML="";
+  socket.emit("join",{userId:c.id});
+}
+
+// ===== Send/receive messages =====
+document.getElementById("send-btn").onclick=sendMessage;
+document.getElementById("message-input").addEventListener("keypress",e=>{if(e.key==="Enter") sendMessage();});
+
+function sendMessage(){
+  const input=document.getElementById("message-input");
+  const msg=input.value.trim();
+  if(!msg || !selectedContact) return;
+  addMessage(msg,"sent");
+  socket.emit("sendMessage",{senderId:userId, receiverId:selectedContact.id, message:msg});
+  input.value="";
+}
+
+socket.on("receiveMessage",data=>{
+  if(selectedContact && data.senderId===selectedContact.id) addMessage(data.message,"received");
+});
+
+function addMessage(msg,type){
+  const div=document.createElement("div");
+  div.classList.add("message",type);
+  div.innerHTML=msg+`<div class="timestamp">${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>`;
+  document.getElementById("chat-messages").appendChild(div);
+  div.scrollIntoView();
+}
+
+// ===== File upload =====
+document.getElementById("file-btn").onclick=()=>document.getElementById("file-input").click();
+document.getElementById("file-input").onchange=e=>{
+  const file=e.target.files[0];
+  if(!file || !selectedContact) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    const data=reader.result;
+    addMessage(`<img src="${data}" style="max-width:150px;">`,"sent");
+    socket.emit("sendMessage",{senderId:userId, receiverId:selectedContact.id, message:"[file]", file:data});
+  };
+  reader.readAsDataURL(file);
+};
+
+// ===== Online status =====
+socket.on("updateOnline",users=>{
+  contacts.forEach(c=>{
+    const div=Array.from(document.getElementById("contacts").children)
+                   .find(d=>d.querySelector("span").textContent===c.username);
+    if(div) div.classList.toggle("online", users[c.id]);
+  });
+});
+
+// ===== Call =====
+async function startCall(video=true){
+  if(!selectedContact) return alert("Select contact first");
+  localStream = await navigator.mediaDevices.getUserMedia({video, audio:true});
+  peer = new SimplePeer({initiator:true, trickle:false, stream:localStream});
+  peer.on("signal",data=>socket.emit("callUser",{userToCall:selectedContact.id, signalData:data, from:userId}));
+  peer.on("stream",stream=>{
+    const videoElem=document.createElement("video");
+    videoElem.srcObject=stream;
+    videoElem.autoplay=true;
+    videoElem.style.width="200px";
+    document.body.appendChild(videoElem);
+  });
+}
+
+document.getElementById("videoCallBtn").onclick=()=>startCall(true);
+document.getElementById("voiceCallBtn").onclick=()=>startCall(false);
+
+socket.on("callIncoming",data=>{
+  const accept=confirm(`${data.from} is calling. Accept?`);
+  if(!accept) return;
+  navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(stream=>{
+    localStream=stream;
+    peer=new SimplePeer({initiator:false, trickle:false, stream});
+    peer.on("signal",signal=>socket.emit("answerCall",{signal,to:data.from}));
+    peer.on("stream",remoteStream=>{
+      const videoElem=document.createElement("video");
+      videoElem.srcObject=remoteStream;
+      videoElem.autoplay=true;
+      videoElem.style.width="200px";
+      document.body.appendChild(videoElem);
+    });
+    peer.signal(data.signal);
+  });
+});
+</script>
+</body>
+</html>
